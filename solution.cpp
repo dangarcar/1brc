@@ -1,24 +1,23 @@
-#include <map>
 #include <cstdio>
 #include <string_view>
 #include <string>
 #include <unordered_map>
 #include <algorithm>
 #include <array>
+#include <thread>
+#include <future>
+#include <bitset>
 
-#include <iostream>
-using namespace std;
-
-#include <sys/types.h>
-#include <sys/stat.h>
+//POSIX LIBRARIES
 #include <fcntl.h>
-#include <unistd.h>
+#include <sys/stat.h>
 #include <sys/mman.h>
+
+using namespace std;
 
 #undef TEST
 
-//NOT USED FOR NOW
-constexpr int THREADS = 1;
+constexpr int THREADS = 15;
 
 struct row {
     int max, min, sum, count;
@@ -28,6 +27,8 @@ struct row {
         printf("%d.%d/%d.%d/%d.%d", min/10, min%10, avg/10, avg%10, max/10, max%10);
     }
 };
+
+using hash_table = unordered_map<string, row>;
 
 inline array<string_view, THREADS> splitInChunks(const char* data, size_t sz) {
     const auto npos = data + sz;
@@ -46,8 +47,8 @@ inline array<string_view, THREADS> splitInChunks(const char* data, size_t sz) {
     return chunks;
 }
 
-unordered_map<string, row> getTableFromChunk(string_view buffer) {
-    unordered_map<string, row> m;
+hash_table getTableFromChunk(string_view buffer) {
+    hash_table m;
     m.reserve(10000);
     const auto sz = buffer.size();
 
@@ -89,7 +90,7 @@ unordered_map<string, row> getTableFromChunk(string_view buffer) {
     return m;
 }
 
-int main(int argc, char const *argv[]) {
+int main() {
 
 #ifdef TEST
     int fd = ::open("data/dummy.txt", O_RDONLY);
@@ -116,14 +117,30 @@ int main(int argc, char const *argv[]) {
     }
 
     const auto chunks = splitInChunks(data, sz);
-    unordered_map<string, row> m;
+    
+    hash_table m;
+    bitset<THREADS> done;
     m.reserve(10000);
 
-    for(auto c: chunks) {
-        if(!c.empty()) {
-            auto batch = getTableFromChunk(c);
-            printf("%lu, %lu\n", c.size(), batch.size());
-            m.insert(batch.begin(), batch.end());
+    array<future<hash_table>, THREADS> futures;
+    for(int i=0; i<THREADS; ++i) {
+        if(!chunks[i].empty()) {
+            futures[i] = async(getTableFromChunk, chunks[i]);
+            done[i] = false;
+        } else {
+            done[i] = true;
+        }
+    }
+
+    while(!done.all()) {
+        for(int i=0; i<THREADS; ++i) {
+            if(!done[i] &&
+            futures[i].wait_until(chrono::system_clock::time_point::min()) == std::future_status::ready) {
+                done[i] = true;  
+                auto res = futures[i].get();
+                printf("%d finished, %lu rows\n", i, res.size());
+                m.insert(res.begin(), res.end());
+            }
         }
     }
 

@@ -3,6 +3,10 @@
 #include <string_view>
 #include <string>
 #include <unordered_map>
+#include <algorithm>
+#include <array>
+
+#include <iostream>
 using namespace std;
 
 #include <sys/types.h>
@@ -13,6 +17,9 @@ using namespace std;
 
 #undef TEST
 
+//NOT USED FOR NOW
+constexpr int THREADS = 1;
+
 struct row {
     int max, min, sum, count;
 
@@ -22,42 +29,33 @@ struct row {
     }
 };
 
-
-
-int main(int argc, char const *argv[]) {
-    unordered_map<string, row> m;
-
-#ifdef TEST
-    int fd = ::open("data/test.txt", O_RDONLY);
-#else
-    int fd = ::open("data/measurements.txt", O_RDONLY);
-#endif
+inline array<string_view, THREADS> splitInChunks(const char* data, size_t sz) {
+    const auto npos = data + sz;
+    const auto chunkSize = sz/THREADS;
     
-    if(!fd) {
-        perror("Error opening data");
-        exit(1);
+    array<string_view, THREADS> chunks{};
+    auto curr = data;
+    for(int i=0; i<THREADS; ++i) {
+        if(curr >= npos) break;
+
+        auto end = find(curr + chunkSize, npos, '\n');
+        chunks[i] = string_view(curr, end);
+        curr = end + 1;
     }
 
-    struct stat sb;
-    if(fstat(fd, &sb) == -1) {
-        perror("Error getting file size");
-        exit(1);
-    }
+    return chunks;
+}
 
-    auto sz = sb.st_size;
-    const char* data = (const char*) mmap(NULL, sz, PROT_READ, MAP_SHARED, fd, 0);
-    if(data == MAP_FAILED) {
-        perror("Error mapping file");
-        exit(1);
-    }
+unordered_map<string, row> getTableFromChunk(string_view buffer) {
+    unordered_map<string, row> m;
+    m.reserve(10000);
+    const auto sz = buffer.size();
 
-    int lineCount = 0;
-    string_view buffer(data, sz);
     size_t curr = 0L;
     while(curr < sz) {
         auto next = buffer.find('\n', curr);
         if(next == string_view::npos) next = sz;
-        string_view buf(data + curr, next-curr);
+        string_view buf(buffer.data() + curr, next-curr);
 
         size_t i = 0L; 
         while(buf[i] != ';') i++;
@@ -86,8 +84,47 @@ int main(int argc, char const *argv[]) {
         }
 
         curr = next + 1;
-        if(++lineCount % 1000000 == 0)
-            printf("%dM\n", lineCount/1000000);
+    }
+
+    return m;
+}
+
+int main(int argc, char const *argv[]) {
+
+#ifdef TEST
+    int fd = ::open("data/dummy.txt", O_RDONLY);
+#else
+    int fd = ::open("data/measurements.txt", O_RDONLY);
+#endif
+    
+    if(!fd) {
+        perror("Error opening data");
+        exit(1);
+    }
+
+    struct stat sb;
+    if(fstat(fd, &sb) == -1) {
+        perror("Error getting file size");
+        exit(1);
+    }
+
+    auto sz = sb.st_size;
+    const char* data = (const char*) mmap(NULL, sz, PROT_READ, MAP_SHARED, fd, 0);
+    if(data == MAP_FAILED) {
+        perror("Error mapping file");
+        exit(1);
+    }
+
+    const auto chunks = splitInChunks(data, sz);
+    unordered_map<string, row> m;
+    m.reserve(10000);
+
+    for(auto c: chunks) {
+        if(!c.empty()) {
+            auto batch = getTableFromChunk(c);
+            printf("%lu, %lu\n", c.size(), batch.size());
+            m.insert(batch.begin(), batch.end());
+        }
     }
 
     printf("{");

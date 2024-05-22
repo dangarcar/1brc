@@ -2,4 +2,6 @@
 
 echo "Running..."
 
-time { g++ --std=c++23 -O3 solution.cpp -o solution && ./solution; }
+g++ --std=c++23 -O3 solution.cpp -o solution
+
+time ./solution

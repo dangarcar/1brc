@@ -25,6 +25,6 @@ real    0m5.216s
 ```
 
 5. Custom hash map, 15 threads, std::async, g++ O3
-````console
+```console
 real    0m2.665s
 ```

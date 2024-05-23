@@ -1,6 +1,12 @@
 # 1brc
 My implementations for the 1 Billion row challenge, although they're not good enough to be submitted
 
+## Current best time
+### Custom hash map with std::forward_list, 15 threads, std::thread detached, g++ -O3
+```console
+real    0m2.463s
+```
+
 ## Implementations
 All my times had been tested with in a Ubuntu WSL2 virtual machine with 8 virtual processors and 24GB of RAM
 
@@ -24,7 +30,12 @@ real    0m45.070s
 real    0m5.216s
 ```
 
-5. Custom hash map, 15 threads, std::async, g++ O3
+5. Custom hash map, 15 threads, std::async, g++ -O3
 ```console
 real    0m2.665s
+```
+
+6. Custom hash map with std::forward_list, 15 threads, std::thread detached, g++ -O3
+```console
+real    0m2.463s
 ```

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <vector>
+#include <forward_list>
 #include <thread>
 #include <bitset>
 #include <future>
@@ -22,16 +23,19 @@
 using namespace std;
 
 //#define TEST
-//#define DEBUG_PRINT
+#define DEBUG_PRINT
 
 constexpr int THREADS = 15;
-constexpr int MAX_STR_LENGTH = 128;
+constexpr int MAX_STR_LENGTH = 100;
 constexpr int MAX_ROWS = 16384; // 2^14
 constexpr int HASH_MASK = (1 << 14) -1;
 
+atomic_int finishedCounter;
+
 struct row {
-    int max, min, sum, count;
     char name[MAX_STR_LENGTH];
+    int32_t sum, count;
+    int16_t max, min;
 
     void print() const {
         printf("%s ", name);
@@ -41,21 +45,21 @@ struct row {
 };
 
 struct hash_table {
-    array<vector<row>, MAX_ROWS> buckets;
+    array<forward_list<row>, MAX_ROWS> buckets;
     size_t size=0;
 
     row* get(int hash, const char* str) {
-        for(int j=0; j<buckets[hash].size(); ++j) {
+        for(row &r: buckets[hash]) {
             int cmp=0;
 
             int i=0;
             while(str[i] != ';') {
-                cmp |= str[i] - buckets[hash][j].name[i];
+                cmp |= str[i] - r.name[i];
                 ++i;
             }
 
             if(!cmp)
-                return &buckets[hash][j];
+                return &r;
         }
 
         return nullptr;
@@ -73,7 +77,7 @@ struct hash_table {
             ++i;
         }
 
-        buckets[hash].push_back(r);
+        buckets[hash].push_front(r);
 
         size++;
     }
@@ -86,7 +90,7 @@ struct hash_table {
         for(int i=0; i<MAX_ROWS; ++i) {
             auto b = buckets[i];
             if(!b.empty()) {
-                collisions += b.size() > 1;
+                //collisions += b.size() > 1;
                 for(auto r: b) {
                     r.print();
                     printf(", ");
@@ -100,22 +104,7 @@ struct hash_table {
         printf("\nCollisions: %d\nHoles: %d\n", collisions, holes);
     }
 
-    void printCollisions() const {
-        unordered_map<int,int> colls;
-
-        for(int i=0; i<MAX_ROWS; ++i) {
-            auto b = buckets[i];
-            colls[b.size()]++;
-        }
-        for(auto [num, count]: colls) {
-            if(num > 1)
-                printf("%d: %d\n", num, count);
-        }
-
-        printf("Collisions: %d\n", MAX_ROWS - colls[0] - colls[1]);
-    }
-
-    void insertVector(int hash, vector<row> batch) {
+    void insertList(int hash, forward_list<row> batch) {
         for(auto b: batch) {
             for(auto &e: buckets[hash]) {
                 int cmp = strncmp(b.name, e.name, MAX_STR_LENGTH);
@@ -129,7 +118,7 @@ struct hash_table {
                 }
             }
 
-            buckets[hash].push_back(b);
+            buckets[hash].push_front(b);
             
             sum_end:;
         }
@@ -156,8 +145,7 @@ inline array<string_view, THREADS> splitInChunks(const char* data, size_t sz) {
     return chunks;
 }
 
-unique_ptr<hash_table> getTableFromChunk(string_view buffer) {
-    auto m = make_unique<hash_table>();
+void getTableFromChunk(string_view buffer, hash_table& m) {
     const auto sz = buffer.size();
 
     size_t curr = 0L;
@@ -173,7 +161,7 @@ unique_ptr<hash_table> getTableFromChunk(string_view buffer) {
         auto last = i;
         i++;
 
-        auto tmp = 0;
+        int16_t tmp = 0;
         while(str[i] != '\n') {
             if('0' <= str[i] && str[i] <= '9') {
                 tmp *= 10;
@@ -182,22 +170,21 @@ unique_ptr<hash_table> getTableFromChunk(string_view buffer) {
             ++i;
         }
 
-        auto entry = m->get(hash & HASH_MASK, str);
+        auto entry = m.get(hash & HASH_MASK, str);
         if(entry) {
             entry->count++;
             entry->sum += tmp;
             entry->min = min(entry->min, tmp);
             entry->max = max(entry->max, tmp);
         } else {
-            m->push(hash & HASH_MASK, str, tmp); 
+            m.push(hash & HASH_MASK, str, tmp); 
         }
 
         curr += i + 1;
     }
 
-    //m->print();
-
-    return m;
+    //m.print();
+    //return m;
 }
 
 int main() {
@@ -235,14 +222,19 @@ int main() {
 
     const auto chunks = splitInChunks(data, sz);
 
-    bitset<THREADS> done;
-    array<future<unique_ptr<hash_table>>, THREADS> futures;
+    array<hash_table, THREADS> tables;
     for(int i=0; i<THREADS; ++i) {
         if(!chunks[i].empty()) {
-            futures[i] = async(getTableFromChunk, chunks[i]);
-            done[i] = false;
+            auto t = thread([&, i]{
+                getTableFromChunk(chunks[i], tables[i]);
+                finishedCounter++;
+            #ifdef DEBUG_PRINT
+                printf("%d finished, %lu rows\n", i, tables[i].size);
+            #endif
+            });
+            t.detach();
         } else {
-            done[i] = true;
+            finishedCounter++;
         }
     }
 
@@ -250,34 +242,25 @@ int main() {
     auto t2 = chrono::high_resolution_clock::now();
 #endif
 
-    array<unique_ptr<hash_table>, THREADS> batches;
-    while(!done.all()) {
-        for(int i=0; i<THREADS; ++i) {
-            if(!done[i] &&
-            futures[i].wait_until(chrono::system_clock::time_point::min()) == std::future_status::ready) {
-                done[i] = true;
-                batches[i] = futures[i].get();
-                printf("%d finished, %lu rows\n", i, batches[i]->size);
-            }
-        }
-    }
+    while(finishedCounter < THREADS);
 
 #ifdef DEBUG_PRINT
     auto t3 = chrono::high_resolution_clock::now();
 #endif
 
-    hash_table m;
+    auto& m = tables[0];
     vector<row*> output;
-    for(int hash=0; hash<MAX_ROWS; ++hash) {
-        for(int j=0; j<THREADS; ++j) {
-            auto &b = batches[j]->buckets[hash];
+    for(int j=1; j<THREADS; ++j) {
+        for(int hash=0; hash<MAX_ROWS; ++hash) {
+            auto &b = tables[j].buckets[hash];
             if(!b.empty())
-                m.insertVector(hash, move(b));
+                m.insertList(hash, move(b));
         }
+    }
 
-        auto &bucket = m.buckets[hash];
-        for(int i=0; i<bucket.size(); ++i) {
-            output.push_back(&bucket[i]);
+    for(auto& bucket: m.buckets) {
+        for(row& r: bucket) {
+            output.push_back(&r);
         }
     }
 
@@ -294,7 +277,7 @@ int main() {
     printf("}\n");
 
 #ifdef DEBUG_PRINT
-    m.printCollisions();
+    //m.printCollisions();
 
     auto t4 = chrono::high_resolution_clock::now();
 
